@@ -1,4 +1,4 @@
-// Create a new file: client/src/components/LoadingScreen.jsx
+// Create a new file: client/src/components/UI/LoadingScreen.jsx
 import React from "react";
 
 const LoadingScreen = () => {

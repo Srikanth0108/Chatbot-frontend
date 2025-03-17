@@ -1,4 +1,3 @@
-// client/src/context/ChatContext.jsx
 import React, { createContext, useState, useContext, useEffect } from "react";
 import { AuthContext } from "./AuthContext";
 import { saveToLocalStorage, getFromLocalStorage } from "../utils/localStorage";
@@ -15,6 +14,8 @@ export const ChatProvider = ({ children }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [lastUserMessage, setLastUserMessage] = useState("");
   const [abortController, setAbortController] = useState(null);
+  // Track which conversation is currently processing a response
+  const [processingConversationId, setProcessingConversationId] = useState(null);
 
   // Load conversations when user is authenticated
   useEffect(() => {
@@ -31,12 +32,18 @@ export const ChatProvider = ({ children }) => {
   useEffect(() => {
     if (activeConversation) {
       loadConversationMessages(activeConversation.id);
+      
+      // Update loading state based on whether this conversation is being processed
+      setIsLoading(processingConversationId === activeConversation.id);
     } else {
       setMessages([]);
     }
-  }, [activeConversation]);
+  }, [activeConversation, processingConversationId]);
 
   const setActiveConversationWithStorage = (conversation) => {
+    // Don't update if we're already on this conversation
+    if (activeConversation?.id === conversation.id) return;
+    
     setActiveConversation(conversation);
     if (currentUser && conversation) {
       localStorage.setItem(
@@ -45,6 +52,7 @@ export const ChatProvider = ({ children }) => {
       );
     }
   };
+
   const loadUserConversations = async () => {
     try {
       const storageKey = `${currentUser.id}_conversations`;
@@ -79,11 +87,7 @@ export const ChatProvider = ({ children }) => {
 
   const loadConversationMessages = async (conversationId) => {
     try {
-      // In a real app with backend, use the API call
-      // const response = await getConversationMessages(currentUser.id, conversationId);
-      // setMessages(response.messages);
-
-      // For this example, we'll still use local storage
+      // For this example, we'll use local storage
       const storageKey = `${currentUser.id}_messages_${conversationId}`;
       const storedMessages = getFromLocalStorage(storageKey) || [];
       setMessages(storedMessages);
@@ -134,11 +138,11 @@ export const ChatProvider = ({ children }) => {
         ? `${firstMessage.substring(0, 30)}...`
         : firstMessage;
 
-    setConversations((prev) =>
-      prev.map((conv) =>
-        conv.id === conversationId ? { ...conv, title } : conv
-      )
+    const updatedConversations = conversations.map((conv) =>
+      conv.id === conversationId ? { ...conv, title } : conv
     );
+    
+    setConversations(updatedConversations);
 
     if (activeConversation?.id === conversationId) {
       setActiveConversation((prev) => ({ ...prev, title }));
@@ -147,12 +151,7 @@ export const ChatProvider = ({ children }) => {
     // Save to local storage
     if (currentUser) {
       const storageKey = `${currentUser.id}_conversations`;
-      saveToLocalStorage(
-        storageKey,
-        conversations.map((conv) =>
-          conv.id === conversationId ? { ...conv, title } : conv
-        )
-      );
+      saveToLocalStorage(storageKey, updatedConversations);
     }
   };
 
@@ -161,6 +160,12 @@ export const ChatProvider = ({ children }) => {
       createNewConversation();
     }
 
+    // Store the conversation ID we're currently processing
+    const currentConversationId = activeConversation.id;
+    
+    // Set this conversation as processing
+    setProcessingConversationId(currentConversationId);
+    
     // Create a new AbortController for this request
     const controller = new AbortController();
     setAbortController(controller);
@@ -180,25 +185,31 @@ export const ChatProvider = ({ children }) => {
         timestamp: new Date().toISOString(),
       };
 
-      const updatedMessages = [...messages, userMessage];
-      setMessages(updatedMessages);
-
+      // Store current messages for this conversation
+      const currentMessages = [...messages];
+      const updatedMessages = [...currentMessages, userMessage];
+      
       // If this is the first message, update conversation title
-      if (messages.length === 0) {
-        updateConversationTitle(activeConversation.id, content);
+      if (currentMessages.length === 0) {
+        updateConversationTitle(currentConversationId, content);
       }
 
       // Save messages to local storage
       if (currentUser) {
-        const storageKey = `${currentUser.id}_messages_${activeConversation.id}`;
+        const storageKey = `${currentUser.id}_messages_${currentConversationId}`;
         saveToLocalStorage(storageKey, updatedMessages);
+      }
+
+      // Update UI if we're still on the same conversation
+      if (activeConversation?.id === currentConversationId) {
+        setMessages(updatedMessages);
       }
 
       // Send message to backend with conversation history and language preference
       const response = await sendChatMessage(
-        activeConversation.id,
+        currentConversationId,
         content,
-        messages, // Pass the existing messages as history
+        currentMessages, // Pass the existing messages as history
         preferredLanguage, // Pass the language preference
         controller.signal // Pass the AbortController signal
       );
@@ -213,13 +224,32 @@ export const ChatProvider = ({ children }) => {
       };
 
       const finalMessages = [...updatedMessages, aiMessage];
-      setMessages(finalMessages);
+      
+      // Update conversations with the latest timestamp
+      const updatedConversations = conversations.map((conv) =>
+        conv.id === currentConversationId 
+          ? { ...conv, timestamp: new Date().toISOString() } 
+          : conv
+      );
+      setConversations(updatedConversations);
+      
+      // Save updated conversations to local storage
+      if (currentUser) {
+        const storageKey = `${currentUser.id}_conversations`;
+        saveToLocalStorage(storageKey, updatedConversations);
+      }
 
       // Save updated messages to local storage
       if (currentUser) {
-        const storageKey = `${currentUser.id}_messages_${activeConversation.id}`;
+        const storageKey = `${currentUser.id}_messages_${currentConversationId}`;
         saveToLocalStorage(storageKey, finalMessages);
       }
+
+      // Update UI only if we're still on the same conversation
+      if (activeConversation?.id === currentConversationId) {
+        setMessages(finalMessages);
+      }
+      
     } catch (error) {
       // Don't show error message if the request was aborted
       if (error.name !== "AbortError") {
@@ -234,11 +264,30 @@ export const ChatProvider = ({ children }) => {
           isError: true,
         };
 
-        setMessages((prev) => [...prev, errorMessage]);
+        // Get the current messages from local storage
+        if (currentUser) {
+          const storageKey = `${currentUser.id}_messages_${currentConversationId}`;
+          const storedMessages = getFromLocalStorage(storageKey) || [];
+          const updatedMessages = [...storedMessages, errorMessage];
+          
+          // Save to local storage
+          saveToLocalStorage(storageKey, updatedMessages);
+          
+          // Update UI only if we're still on the same conversation
+          if (activeConversation?.id === currentConversationId) {
+            setMessages(updatedMessages);
+          }
+        }
       }
     } finally {
-      setIsLoading(false);
+      // Clear the processing state
+      setProcessingConversationId(null);
       setAbortController(null);
+      
+      // Clear the loading state if we're still on the same conversation
+      if (activeConversation?.id === currentConversationId) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -247,6 +296,7 @@ export const ChatProvider = ({ children }) => {
       abortController.abort();
       setIsLoading(false);
       setAbortController(null);
+      setProcessingConversationId(null);
     }
   };
 
@@ -257,11 +307,16 @@ export const ChatProvider = ({ children }) => {
       return;
     }
 
-    setIsLoading(true);
-
+    // Store the conversation ID we're currently processing
+    const currentConversationId = activeConversation.id;
+    
+    // Set this conversation as processing
+    setProcessingConversationId(currentConversationId);
+    
     // Create a new AbortController for this request
     const controller = new AbortController();
     setAbortController(controller);
+    setIsLoading(true);
 
     try {
       // Find the corresponding user message that came before this AI message
@@ -289,7 +344,16 @@ export const ChatProvider = ({ children }) => {
         updatedMessages = messages.filter((msg) => msg.id !== messageId);
       }
 
-      setMessages(updatedMessages);
+      // Save to local storage
+      if (currentUser) {
+        const storageKey = `${currentUser.id}_messages_${currentConversationId}`;
+        saveToLocalStorage(storageKey, updatedMessages);
+      }
+
+      // Update UI only if we're still on the same conversation
+      if (activeConversation?.id === currentConversationId) {
+        setMessages(updatedMessages);
+      }
 
       // Get the preferred language from localStorage
       const preferredLanguage =
@@ -297,7 +361,7 @@ export const ChatProvider = ({ children }) => {
 
       // Send the corresponding user message to get a new AI response
       const response = await sendChatMessage(
-        activeConversation.id,
+        currentConversationId,
         userMessageContent,
         updatedMessages.slice(0, userMessageIndex), // Pass the conversation history up to this point
         preferredLanguage,
@@ -314,16 +378,33 @@ export const ChatProvider = ({ children }) => {
       };
 
       const finalMessages = [...updatedMessages, newAiMessage];
-      setMessages(finalMessages);
-
-      // Update lastUserMessage to the user message we just regenerated from
-      setLastUserMessage(userMessageContent);
+      
+      // Update conversations with the latest timestamp
+      const updatedConversations = conversations.map((conv) =>
+        conv.id === currentConversationId 
+          ? { ...conv, timestamp: new Date().toISOString() } 
+          : conv
+      );
+      setConversations(updatedConversations);
+      
+      // Save updated conversations to local storage
+      if (currentUser) {
+        const storageKey = `${currentUser.id}_conversations`;
+        saveToLocalStorage(storageKey, updatedConversations);
+      }
 
       // Save updated messages to local storage
       if (currentUser) {
-        const storageKey = `${currentUser.id}_messages_${activeConversation.id}`;
+        const storageKey = `${currentUser.id}_messages_${currentConversationId}`;
         saveToLocalStorage(storageKey, finalMessages);
       }
+
+      // Update UI only if we're still on the same conversation
+      if (activeConversation?.id === currentConversationId) {
+        setMessages(finalMessages);
+        setLastUserMessage(userMessageContent);
+      }
+      
     } catch (error) {
       // Don't show error message if the request was aborted
       if (error.name !== "AbortError") {
@@ -338,15 +419,34 @@ export const ChatProvider = ({ children }) => {
           isError: true,
         };
 
-        setMessages((prev) => [...prev, errorMessage]);
+        // Get the current messages from local storage
+        if (currentUser) {
+          const storageKey = `${currentUser.id}_messages_${currentConversationId}`;
+          const storedMessages = getFromLocalStorage(storageKey) || [];
+          const updatedMessages = [...storedMessages, errorMessage];
+          
+          // Save to local storage
+          saveToLocalStorage(storageKey, updatedMessages);
+          
+          // Update UI only if we're still on the same conversation
+          if (activeConversation?.id === currentConversationId) {
+            setMessages(updatedMessages);
+          }
+        }
       }
     } finally {
-      setIsLoading(false);
+      // Clear the processing state
+      setProcessingConversationId(null);
       setAbortController(null);
+      
+      // Clear the loading state if we're still on the same conversation
+      if (activeConversation?.id === currentConversationId) {
+        setIsLoading(false);
+      }
     }
   };
 
-  const provideMessageFeedback = (messageId, isPositive) => {
+const provideMessageFeedback = (messageId, isPositive) => {
     // Find the message to provide feedback for
     const messageToRate = messages.find((msg) => msg.id === messageId);
     if (!messageToRate || messageToRate.sender !== "ai") {
@@ -368,13 +468,20 @@ export const ChatProvider = ({ children }) => {
     setMessages(updatedMessages);
 
     // Save to local storage
-    if (currentUser) {
+    if (currentUser && activeConversation) {
       const storageKey = `${currentUser.id}_messages_${activeConversation.id}`;
       saveToLocalStorage(storageKey, updatedMessages);
     }
   };
 
   const deleteConversation = (conversationId) => {
+    // If this conversation is being processed, abort it
+    if (processingConversationId === conversationId && abortController) {
+      abortController.abort();
+      setAbortController(null);
+      setProcessingConversationId(null);
+    }
+
     // Remove conversation from list
     setConversations((prev) =>
       prev.filter((conv) => conv.id !== conversationId)
@@ -400,6 +507,13 @@ export const ChatProvider = ({ children }) => {
   };
 
   const deleteAllConversations = () => {
+    // If any conversation is being processed, abort it
+    if (processingConversationId && abortController) {
+      abortController.abort();
+      setAbortController(null);
+      setProcessingConversationId(null);
+    }
+
     // Clear all conversations from state
     setConversations([]);
     setActiveConversation(null);
@@ -438,6 +552,8 @@ export const ChatProvider = ({ children }) => {
         regenerateResponse,
         provideMessageFeedback,
         stopResponse,
+        // Expose processing state for UI indicators
+        processingConversationId,
       }}
     >
       {children}

@@ -1,10 +1,10 @@
-// client/src/components/Chat/Sidebar.jsx
 import React, { useContext, useState, useRef, useEffect } from "react";
 import { AuthContext } from "../../context/AuthContext";
 import { ChatContext } from "../../context/ChatContext";
 import { useNavigate } from "react-router-dom";
 import ConfirmDialog from "../UI/ConfirmDialog";
 import ProfileModal from "../UI/ProfileModal";
+
 const Sidebar = ({
   conversations,
   activeConversation,
@@ -13,7 +13,7 @@ const Sidebar = ({
   setIsOpen,
 }) => {
   const { currentUser, logout } = useContext(AuthContext);
-  const { createNewConversation, deleteAllConversations, isLoading } =
+  const { createNewConversation, deleteAllConversations, isLoading, processingConversationId } =
     useContext(ChatContext);
   const navigate = useNavigate();
   const [showUserMenu, setShowUserMenu] = useState(false);
@@ -118,10 +118,12 @@ const Sidebar = ({
               }`}
               onClick={() => setActiveConversation(conv)}
             >
-              <span className="conv-title">{conv.title}</span>
-              <span className="conv-date">
-                {new Date(conv.timestamp).toLocaleDateString()}
-              </span>
+              <div className="conv-info">
+                <span className="conv-title">{conv.title}</span>
+                <span className="conv-date">
+                  {new Date(conv.timestamp).toLocaleDateString()}
+                </span>
+              </div>
             </div>
           ))}
         </div>
